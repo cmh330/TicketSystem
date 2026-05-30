@@ -7,6 +7,7 @@
 #include <string>
 #include <fstream>
 #include <cstdio>
+#include "vector/vector.h"
 
 template <class Key, class Value, int M = 50>
 class BPlusTree {
@@ -586,6 +587,58 @@ public:
 
         if (pathDepth == 0 || leaf.cnt >= MIN) return;
         fixLeaf(blockId, leaf);
+    }
+
+    // 返回所有 key 匹配的 value，加到 result，返回找到的个数
+    int findAll(const Key &key, sjtu::vector<Value> &result) {
+        int blockId = locateFirstLeaf(key);
+        int cnt = 0;
+        while (blockId != -1) {
+            Leaf leaf;
+            readLeaf(blockId, leaf);
+            int i = 0;
+            while (i < leaf.cnt && leaf.k[i] < key) ++i;
+            while (i < leaf.cnt) {
+                if (key < leaf.k[i]) return cnt;
+                result.push_back(leaf.v[i]);
+                ++cnt;
+                ++i;
+            }
+            blockId = leaf.next;
+        }
+        return cnt;
+    }
+
+    // 返回 keyLow <= k <= keyHigh 的所有记录，加到 keys 和 values，返回找到的个数
+    int findRange(const Key &keyLow, const Key &keyHigh, sjtu::vector<Key> &keys, sjtu::vector<Value> &values) {
+        int blockId = locateFirstLeaf(keyLow);
+        int cnt = 0;
+        while (blockId != -1) {
+            Leaf leaf;
+            readLeaf(blockId, leaf);
+            int i = 0;
+            while (i < leaf.cnt && leaf.k[i] < keyLow) ++i;
+            while (i < leaf.cnt) {
+                if (keyHigh < leaf.k[i]) return cnt;
+                keys.push_back(leaf.k[i]);
+                values.push_back(leaf.v[i]);
+                ++cnt;
+                ++i;
+            }
+            blockId = leaf.next;
+        }
+        return cnt;
+    }
+
+    // 把 (key, oldValue) 的 value 改成 newValue，不存在则不操作
+    void update(const Key &key, const Value &oldValue, const Value &newValue) {
+        int blockId = locateLeaf(key, oldValue);
+        Leaf leaf;
+        readLeaf(blockId, leaf);
+        int pos = lowerBound(leaf, key, oldValue);
+        if (pos >= leaf.cnt || !compareEqual(leaf.k[pos], leaf.v[pos], key, oldValue)) return;
+        leaf.v[pos] = newValue;
+        writeLeaf(blockId, leaf);
     }
 };
 
