@@ -399,6 +399,12 @@ public:
     }
 
     void queryTrain(const char *trainID, const char *date) {
+        int month = (date[0] - '0') * 10 + (date[1] - '0');
+        if (month < 6 || month > 8) {
+            std::cout << "-1\n";
+            return;
+        }
+
         TrainIDKey key(trainID);
         sjtu::vector<TrainInfo> found;
         trainTree.findAll(key, found);
