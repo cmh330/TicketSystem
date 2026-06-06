@@ -265,68 +265,101 @@ private:
     }
     bool findBestTransfer(const char *fromStation, const char *toStation, int userDepartDay, bool byTime,
                           TicketResult &bestA, TicketResult &bestB) {
-        sjtu::vector<StationKey> aKeys;
-        sjtu::vector<StationInfo> aInfos;
-        queryByStation(fromStation, aKeys, aInfos);
-        bool found = false;
+    sjtu::vector<StationKey> aKeys;
+    sjtu::vector<StationInfo> aInfos;
+    queryByStation(fromStation, aKeys, aInfos);
+    bool found = false;
 
-        for (int ai = 0; ai < aKeys.size(); ++ai) {
-            const char* trainIdA = aKeys[ai].trainID;
-            int fromIdxA = aInfos[ai].stationIdx;
-            TrainInfo trainA;
-            if (!getTrainInfo(trainIdA, trainA)) continue;
+    for (int ai = 0; ai < aKeys.size(); ++ai) {
+        const char* trainIdA = aKeys[ai].trainID;
+        int fromIdxA = aInfos[ai].stationIdx;
+        TrainInfo trainA;
+        if (!getTrainInfo(trainIdA, trainA)) continue;
 
-            int startDayA = inferStartDay(userDepartDay, trainA.departMins[fromIdxA], trainA.startTimeMin);
-            if (startDayA < trainA.saleStart || startDayA > trainA.saleEnd) continue;
+        int startDayA = inferStartDay(userDepartDay, trainA.departMins[fromIdxA], trainA.startTimeMin);
+        if (startDayA < trainA.saleStart || startDayA > trainA.saleEnd) continue;
 
-            SeatInfo seatA;
-            if (!getSeatInfo(trainIdA, startDayA, seatA)) continue;
+        SeatInfo seatA;
+        if (!getSeatInfo(trainIdA, startDayA, seatA)) continue;
 
-            int baseA = startDayA * 1440 + trainA.startTimeMin;
+        int baseA = startDayA * 1440 + trainA.startTimeMin;
 
-            for (int midIdx = fromIdxA + 1; midIdx < trainA.stationNum; ++midIdx) {
-                const char* midStation = trainA.stations[midIdx];
-                if (strcmp(midStation, toStation) == 0) continue;
+        for (int midIdx = fromIdxA + 1; midIdx < trainA.stationNum; ++midIdx) {
+            const char* midStation = trainA.stations[midIdx];
+            if (strcmp(midStation, toStation) == 0) continue;
 
-                int arriveAtMid = baseA + trainA.arriveMins[midIdx];
-                int midArriveDay = arriveAtMid / 1440;
+            int arriveAtMid = baseA + trainA.arriveMins[midIdx];
 
-                for (int d = midArriveDay; d < midArriveDay + 3; ++d) {
-                    sjtu::vector<TicketResult> bResults;
-                    collectTickets(midStation, toStation, d, bResults);
+            // 直接枚举所有从midStation出发的车次B
+            sjtu::vector<StationKey> bKeys;
+            sjtu::vector<StationInfo> bInfos;
+            queryByStation(midStation, bKeys, bInfos);
 
-                    for (int bi = 0; bi < bResults.size(); ++bi) {
-                        TicketResult &rb = bResults[bi];
-                        if (strcmp(rb.trainID, trainIdA) == 0) continue;
-                        if (rb.leaveAbsTime < arriveAtMid) continue;
+            for (int bi = 0; bi < bKeys.size(); ++bi) {
+                const char* trainIdB = bKeys[bi].trainID;
+                if (strcmp(trainIdB, trainIdA) == 0) continue;
+                int midIdxB = bInfos[bi].stationIdx;
 
-                        int minSeatsA = seatA.seats[fromIdxA];
-                        for (int k = fromIdxA + 1; k < midIdx; ++k) if (seatA.seats[k] < minSeatsA) minSeatsA = seatA.seats[k];
+                TrainInfo trainB;
+                if (!getTrainInfo(trainIdB, trainB)) continue;
 
-                        TicketResult ra;
-                        strncpy(ra.trainID, trainA.trainID, 20);
-                        ra.trainID[20] = '\0';
-                        strncpy(ra.fromStation, trainA.stations[fromIdxA], 30);
-                        ra.fromStation[30] = '\0';
-                        strncpy(ra.toStation, midStation, 30);
-                        ra.toStation[30] = '\0';
-                        ra.leaveAbsTime = baseA + trainA.departMins[fromIdxA];
-                        ra.arriveAbsTime = baseA + trainA.arriveMins[midIdx];
-                        ra.price = trainA.prefixPrice[midIdx] - trainA.prefixPrice[fromIdxA];
-                        ra.availSeats = minSeatsA;
+                // 找 trainB 中的 toStation 下标
+                int toIdxB = -1;
+                for (int k = midIdxB + 1; k < trainB.stationNum; ++k) {
+                    if (strcmp(trainB.stations[k], toStation) == 0) { toIdxB = k; break; }
+                }
+                if (toIdxB < 0) continue;
 
-                        bool better = (!found || isBetterTransfer(ra, rb, bestA, bestB, byTime));
-                        if (better) {
-                            found = true;
-                            bestA = ra;
-                            bestB = rb;
-                        }
-                    }
+                // 计算 B 在哪个始发日期能在 arriveAtMid 之后从 midStation 出发
+                int needAbsMin = arriveAtMid - trainB.startTimeMin - trainB.departMins[midIdxB];
+                int startDayB = needAbsMin / 1440;
+                if (needAbsMin % 1440 != 0 || startDayB * 1440 < needAbsMin) {
+                    if (startDayB * 1440 + trainB.startTimeMin + trainB.departMins[midIdxB] < arriveAtMid) ++startDayB;
+                }
+                if (startDayB < trainB.saleStart) startDayB = trainB.saleStart;
+                if (startDayB > trainB.saleEnd) continue;
+
+                SeatInfo seatB;
+                if (!getSeatInfo(trainIdB, startDayB, seatB)) continue;
+                int minSeatsB = seatB.seats[midIdxB];
+                for (int k = midIdxB + 1; k < toIdxB; ++k) if (seatB.seats[k] < minSeatsB) minSeatsB = seatB.seats[k];
+
+                int baseB = startDayB * 1440 + trainB.startTimeMin;
+
+                TicketResult rb;
+                strncpy(rb.trainID, trainIdB, 20); rb.trainID[20] = '\0';
+                strncpy(rb.fromStation, midStation, 30); rb.fromStation[30] = '\0';
+                strncpy(rb.toStation, toStation, 30); rb.toStation[30] = '\0';
+                rb.leaveAbsTime = baseB + trainB.departMins[midIdxB];
+                rb.arriveAbsTime = baseB + trainB.arriveMins[toIdxB];
+                rb.price = trainB.prefixPrice[toIdxB] - trainB.prefixPrice[midIdxB];
+                rb.availSeats = minSeatsB;
+
+                if (rb.leaveAbsTime < arriveAtMid) continue;
+
+                int minSeatsA = seatA.seats[fromIdxA];
+                for (int k = fromIdxA + 1; k < midIdx; ++k) if (seatA.seats[k] < minSeatsA) minSeatsA = seatA.seats[k];
+
+                TicketResult ra;
+                strncpy(ra.trainID, trainA.trainID, 20); ra.trainID[20] = '\0';
+                strncpy(ra.fromStation, trainA.stations[fromIdxA], 30); ra.fromStation[30] = '\0';
+                strncpy(ra.toStation, midStation, 30); ra.toStation[30] = '\0';
+                ra.leaveAbsTime = baseA + trainA.departMins[fromIdxA];
+                ra.arriveAbsTime = baseA + trainA.arriveMins[midIdx];
+                ra.price = trainA.prefixPrice[midIdx] - trainA.prefixPrice[fromIdxA];
+                ra.availSeats = minSeatsA;
+
+                bool better = (!found || isBetterTransfer(ra, rb, bestA, bestB, byTime));
+                if (better) {
+                    found = true;
+                    bestA = ra;
+                    bestB = rb;
                 }
             }
         }
-        return found;
     }
+    return found;
+}
 
 public:
     TrainManager() : trainTree("train"), stationTree("station"), seatTree("seat") {}
@@ -454,6 +487,12 @@ public:
     }
 
     void queryTicket(const char* fromStation, const char* toStation, const char* date, bool byTime) {
+        int month = (date[0] - '0') * 10 + (date[1] - '0');
+        if (month < 6 || month > 8) {
+            std::cout << "0\n";
+            return;
+        }
+
         sjtu::vector<TicketResult> results;
         collectTickets(fromStation, toStation, dateToDay(date), results);
         sortTickets(results, byTime);
@@ -464,6 +503,12 @@ public:
     }
 
     void queryTransfer(const char* fromStation, const char* toStation, const char* date, bool byTime) {
+        int month = (date[0] - '0') * 10 + (date[1] - '0');
+        if (month < 6 || month > 8) {
+            std::cout << "0\n";
+            return;
+        }
+
         TicketResult bestA, bestB;
         if (!findBestTransfer(fromStation, toStation, dateToDay(date), byTime, bestA, bestB)) {
             std::cout << "0\n";
