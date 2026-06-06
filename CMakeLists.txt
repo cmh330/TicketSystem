@@ -3,9 +3,9 @@ project(TicketSystem)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(TicketSystem main.cpp
-        src/vector/utility.h
-        src/vector/vector.h
-        src/vector/exceptions.h)
+file(GLOB_RECURSE HEADERS "src/*.h")
 
-target_include_directories(TicketSystem PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_executable(code main.cpp ${HEADERS}
+        src/orderManager.h)
+
+target_include_directories(code PRIVATE ${CMAKE_SOURCE_DIR}/src)
