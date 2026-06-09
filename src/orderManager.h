@@ -9,6 +9,7 @@
 #include "../src/bpt.h"
 #include "../src/map/map.h"
 #include "../src/trainManager.h"
+#include "../src/storage.h"
 #include <cstring>
 #include <iostream>
 #include <climits>
@@ -105,11 +106,13 @@ struct PendingInfo {
 
 class OrderManager {
 private:
-    BPlusTree<OrderKey, OrderInfo> orderTree;
-    BPlusTree<PendingKey, PendingInfo> pendingTree;
+    BPlusTree<OrderKey, int> orderTree;
+    Storage<OrderInfo> orderStorage;
+    BPlusTree<PendingKey, int> pendingTree;
+    Storage<PendingInfo> pendingStorage;
 
     // queryOrder 和 refundTicket辅助
-    void collectOrders(const char *username, sjtu::vector<OrderInfo> &orders) {
+    void collectOrders(const char *username, sjtu::vector<OrderInfo> &orders, sjtu::vector<int> &offsets) {
         OrderKey low, high;
         strncpy(low.username,  username, 20);
         low.username[20]  = '\0';
@@ -118,7 +121,12 @@ private:
         low.time  = INT_MIN;
         high.time = 0;
         sjtu::vector<OrderKey> keys;
-        orderTree.findRange(low, high, keys, orders);
+        orderTree.findRange(low, high, keys, offsets);
+        for (int i = 0; i < offsets.size(); ++i) {
+            OrderInfo o;
+            orderStorage.read(offsets[i], o);
+            orders.push_back(o);
+        }
     }
 
     // 有人退票时处理候补
@@ -126,11 +134,12 @@ private:
         PendingKey low(trainID, startDay, 0);
         PendingKey high(trainID, startDay, INT_MAX);
         sjtu::vector<PendingKey> pendingKeys;
-        sjtu::vector<PendingInfo> pendingInfos;
-        pendingTree.findRange(low, high, pendingKeys, pendingInfos);
+        sjtu::vector<int> pendingOffsets;
+        pendingTree.findRange(low, high, pendingKeys, pendingOffsets);
 
-        for (int i = 0; i < pendingInfos.size(); ++i) {
-            PendingInfo &info = pendingInfos[i];
+        for (int i = 0; i < pendingOffsets.size(); ++i) {
+            PendingInfo info;
+            pendingStorage.read(pendingOffsets[i], info);
             SeatInfo seat;
             if (!tm.getSeatInfo(trainID, startDay, seat)) continue;
             int minSeats = seat.seats[info.fromIdx];
@@ -140,22 +149,23 @@ private:
             if (minSeats < info.num) continue;
 
             tm.modifySeats(trainID, startDay, info.fromIdx, info.toIdx, -info.num);
-            pendingTree.erase(pendingKeys[i], info);
+            pendingTree.erase(pendingKeys[i], pendingOffsets[i]);
 
             OrderKey ok(info.username, info.time);
-            sjtu::vector<OrderInfo> orders;
-            orderTree.findAll(ok, orders);
-            if (!orders.empty()) {
-                OrderInfo of = orders[0];
-                of.status = ORDER_SUCCESS;
-                orderTree.erase(ok, orders[0]);
-                orderTree.insert(ok, of);
+            sjtu::vector<int> orderOffs;
+            orderTree.findAll(ok, orderOffs);
+            if (!orderOffs.empty()) {
+                OrderInfo updated;
+                orderStorage.read(orderOffs[0], updated);
+                updated.status = ORDER_SUCCESS;
+                orderStorage.update(orderOffs[0], updated);
             }
         }
     }
 
 public:
-    OrderManager() : orderTree("order"), pendingTree("pending") {}
+    OrderManager() : orderTree("order"), pendingTree("pending"),
+                     orderStorage("order.data"), pendingStorage("pending.data"){}
 
     int buyTicket(const char* username, const char* trainID, int startDay, int fromIdx, int toIdx,
                   int leaveAbsMin, int arriveAbsMin, int price, int num, bool acceptQueue, int time, TrainManager& tm) {
@@ -189,7 +199,8 @@ public:
 
         if (minSeats >= num) {
             order.status = ORDER_SUCCESS;
-            orderTree.insert(OrderKey(username, time), order);
+            int offset = orderStorage.write(order);
+            orderTree.insert(OrderKey(username, time), offset);
             tm.modifySeats(trainID, startDay, fromIdx, toIdx, -num);
             return price * num;
         }
@@ -197,7 +208,8 @@ public:
         if (!acceptQueue) return -1;
 
         order.status = ORDER_PENDING;
-        orderTree.insert(OrderKey(username, time), order);
+        int offset = orderStorage.write(order);
+        orderTree.insert(OrderKey(username, time), offset);
         PendingInfo pending;
         strncpy(pending.username, username, 20);
         pending.username[20] = '\0';
@@ -205,13 +217,15 @@ public:
         pending.toIdx = toIdx;
         pending.time = time;
         pending.num = num;
-        pendingTree.insert(PendingKey(trainID, startDay, time), pending);
+        int pendingOffset = pendingStorage.write(pending);
+        pendingTree.insert(PendingKey(trainID, startDay, time), pendingOffset);
         return -2;
     }
 
     void queryOrder(const char* username) {
         sjtu::vector<OrderInfo> orders;
-        collectOrders(username, orders);
+        sjtu::vector<int> offsets;
+        collectOrders(username, orders, offsets);
         std::cout << orders.size() << '\n';
 
         for (int i = 0; i < orders.size(); ++i) {
@@ -230,27 +244,26 @@ public:
 
     int refundTicket(const char* username, int n, TrainManager& tm) {
         sjtu::vector<OrderInfo> orders;
-        collectOrders(username, orders);
+        sjtu::vector<int> offsets;
+        collectOrders(username, orders, offsets);
         if (n < 1 || n > orders.size()) return -1;
 
         OrderInfo &order = orders[n - 1];
+        int orderOffset = offsets[n - 1];
         if (order.status == ORDER_REFUNDED) return -1;
 
         OrderKey ok(username, order.time);
         OrderInfo newOrder = order;
         newOrder.status = ORDER_REFUNDED;
-        orderTree.erase(ok, order);
-        orderTree.insert(ok, newOrder);
+        orderStorage.update(orderOffset, newOrder);
 
         if (order.status == ORDER_PENDING) {
-            PendingInfo pending;
-            strncpy(pending.username, username, 20);
-            pending.username[20] = '\0';
-            pending.fromIdx = order.fromIdx;
-            pending.toIdx = order.toIdx;
-            pending.time = order.time;
-            pending.num = order.num;
-            pendingTree.erase(PendingKey(order.trainID, order.startDay, order.time), pending);
+            PendingKey pk(order.trainID, order.startDay, order.time);
+            sjtu::vector<int> pendingOffset;
+            pendingTree.findAll(pk, pendingOffset);
+            if (!pendingOffset.empty()) {
+                pendingTree.erase(pk, pendingOffset[0]);
+            }
             return 0;
         }
 

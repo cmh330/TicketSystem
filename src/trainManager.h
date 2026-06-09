@@ -8,6 +8,7 @@
 #include "../src/bpt.h"
 #include "../src/vector/vector.h"
 #include "../src/date.h"
+#include "../src/storage.h"
 #include <cstring>
 #include <iostream>
 
@@ -152,9 +153,11 @@ struct TicketResult {
 
 class TrainManager {
 private:
-    BPlusTree<TrainIDKey, TrainInfo> trainTree;
+    BPlusTree<TrainIDKey, int> trainTree;
+    Storage<TrainInfo> trainStorage;
     BPlusTree<StationKey, StationInfo> stationTree;
-    BPlusTree<SeatKey, SeatInfo> seatTree;
+    BPlusTree<SeatKey, int> seatTree;
+    Storage<SeatInfo> seatStorage;
 
     // 找出所有经过某个站的已发布车
     void queryByStation(const char* stationName, sjtu::vector<StationKey> &outKeys, sjtu::vector<StationInfo> &outInfos) {
@@ -362,13 +365,14 @@ private:
 }
 
 public:
-    TrainManager() : trainTree("train"), stationTree("station"), seatTree("seat") {}
+    TrainManager() : trainTree("train"), trainStorage("train.data"),
+                     stationTree("station"), seatTree("seat"), seatStorage("seat.data") {}
 
     int addTrain(const char *trainID, int stationNum, int seatNum, const char stations[][31], const int prices[],
                  const char *startTime, const int travelTimes[], const int stopoverTimes[], const char *saleDateStart,
                  const char *saleDateEnd, char type) {
         TrainIDKey key(trainID);
-        sjtu::vector<TrainInfo> found;
+        sjtu::vector<int> found;
         trainTree.findAll(key, found);
         if (!found.empty()) return -1;
 
@@ -394,29 +398,36 @@ public:
             info.arriveMins[i] = info.departMins[i - 1] + travelTimes[i - 1];
             info.departMins[i] = (i < stationNum - 1) ? info.arriveMins[i] + stopoverTimes[i - 1] : info.arriveMins[i];
         }
-        trainTree.insert(key, info);
+        int offset = trainStorage.write(info);
+        trainTree.insert(key, offset);
         return 0;
     }
 
     int deleteTrain(const char *trainID) {
         TrainIDKey key(trainID);
-        sjtu::vector<TrainInfo> found;
+        sjtu::vector<int> found;
         trainTree.findAll(key, found);
-        if (found.empty() || found[0].released) return -1;
+        if (found.empty()) return -1;
+
+        TrainInfo info;
+        trainStorage.read(found[0], info);
+        if (info.released) return -1;
         trainTree.erase(key, found[0]);
         return 0;
     }
 
     int releaseTrain(const char *trainID) {
         TrainIDKey key(trainID);
-        sjtu::vector<TrainInfo> found;
+        sjtu::vector<int> found;
         trainTree.findAll(key, found);
-        if (found.empty() || found[0].released) return -1;
-        TrainInfo info = found[0];
-        info.released = true;
-        trainTree.erase(key, found[0]);
-        trainTree.insert(key, info);
+        if (found.empty()) return -1;
 
+        TrainInfo info;
+        trainStorage.read(found[0], info);
+        if (info.released) return -1;
+
+        info.released = true;
+        trainStorage.update(found[0], info);
         for (int i = 0; i < info.stationNum; ++i) {
             stationTree.insert(StationKey(info.stations[i], trainID), StationInfo(i));
         }
@@ -426,7 +437,8 @@ public:
             for (int i = 0; i < info.stationNum - 1; ++i) {
                 seat.seats[i] = info.seatNum;
             }
-            seatTree.insert(SeatKey(trainID, day), seat);
+            int seatOffset = seatStorage.write(seat);
+            seatTree.insert(SeatKey(trainID, day), seatOffset);
         }
         return 0;
     }
@@ -439,14 +451,15 @@ public:
         }
 
         TrainIDKey key(trainID);
-        sjtu::vector<TrainInfo> found;
+        sjtu::vector<int> found;
         trainTree.findAll(key, found);
         if (found.empty()) {
             std::cout << "-1\n";
             return;
         }
 
-        TrainInfo &info = found[0];
+        TrainInfo info;
+        trainStorage.read(found[0], info);
         int queryDay = dateToDay(date);
         if (queryDay < info.saleStart || queryDay > info.saleEnd) {
             std::cout << "-1\n";
@@ -458,9 +471,9 @@ public:
             seat.stationNum = info.stationNum;
             for (int i = 0; i < info.stationNum-1; ++i) seat.seats[i] = info.seatNum;
         } else {
-            sjtu::vector<SeatInfo> seatFound;
+            sjtu::vector<int> seatFound;
             seatTree.findAll(SeatKey(trainID, queryDay), seatFound);
-            seat = seatFound[0];
+            seatStorage.read(seatFound[0], seat);
         }
 
         std::cout << trainID << ' ' << info.type << '\n';
@@ -522,32 +535,32 @@ public:
     // 找到返回true并填充，找不到返回false
     bool getTrainInfo(const char *trainID, TrainInfo &outInfo) {
         TrainIDKey key(trainID);
-        sjtu::vector<TrainInfo> found;
+        sjtu::vector<int> found;
         trainTree.findAll(key, found);
         if (found.empty()) return false;
-        outInfo = found[0];
+        trainStorage.read(found[0], outInfo);
         return true;
     }
     bool getSeatInfo(const char *trainID, int startDay, SeatInfo &outInfo) {
-        sjtu::vector<SeatInfo> found;
+        sjtu::vector<int> found;
         SeatKey key(trainID, startDay);
         seatTree.findAll(key, found);
         if (found.empty()) return false;
-        outInfo = found[0];
+        seatStorage.read(found[0], outInfo);
         return true;
     }
     // 修改seats[fromIdx]到seats[toIdx - 1], delta 为变化量（买票负，退票正）
     void modifySeats(const char *trainID, int startDay, int fromIdx, int toIdx, int delta) {
         SeatKey key(trainID, startDay);
-        sjtu::vector<SeatInfo> found;
+        sjtu::vector<int> found;
         seatTree.findAll(key, found);
         if (found.empty()) return;
-        SeatInfo newSeat = found[0];
+        SeatInfo seat;
+        seatStorage.read(found[0], seat);
         for (int i = fromIdx; i < toIdx; ++i) {
-            newSeat.seats[i] += delta;
+            seat.seats[i] += delta;
         }
-        seatTree.erase(key, found[0]);
-        seatTree.insert(key, newSeat);
+        seatStorage.update(found[0], seat);
     }
 };
 
