@@ -9,11 +9,11 @@
 #include <cstdio>
 #include "vector/vector.h"
 
-template <class Key, class Value, int M = 30>
+template <class Key, class Value, int M = 20>
 class BPlusTree {
 private:
     static const int MIN = (M - 1) / 2;
-    static const int MAX_INTERNAL_NODES = 1000;
+    static const int MAX_INTERNAL_NODES = 2000;
 
     struct Leaf {
         int cnt = 0; // 有多少数据
