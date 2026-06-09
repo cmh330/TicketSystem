@@ -267,97 +267,126 @@ private:
         }
     }
     bool findBestTransfer(const char *fromStation, const char *toStation, int userDepartDay, bool byTime,
-                          TicketResult &bestA, TicketResult &bestB) {
-    sjtu::vector<StationKey> aKeys;
-    sjtu::vector<StationInfo> aInfos;
-    queryByStation(fromStation, aKeys, aInfos);
-    bool found = false;
+                      TicketResult &bestA, TicketResult &bestB) {
+        sjtu::vector<StationKey> aKeys;
+        sjtu::vector<StationInfo> aInfos;
+        queryByStation(fromStation, aKeys, aInfos);
 
-    for (int ai = 0; ai < aKeys.size(); ++ai) {
-        const char* trainIdA = aKeys[ai].trainID;
-        int fromIdxA = aInfos[ai].stationIdx;
-        TrainInfo trainA;
-        if (!getTrainInfo(trainIdA, trainA)) continue;
+        sjtu::vector<StationKey> tKeys;
+        sjtu::vector<StationInfo> tInfos;
+        queryByStation(toStation, tKeys, tInfos);
 
-        int startDayA = inferStartDay(userDepartDay, trainA.departMins[fromIdxA], trainA.startTimeMin);
-        if (startDayA < trainA.saleStart || startDayA > trainA.saleEnd) continue;
+        bool found = false;
+        int bestTotalTime = 0, bestTotalPrice = 0;
 
-        SeatInfo seatA;
-        if (!getSeatInfo(trainIdA, startDayA, seatA)) continue;
+        for (int ai = 0; ai < aKeys.size(); ++ai) {
+            const char* trainIdA = aKeys[ai].trainID;
+            int fromIdxA = aInfos[ai].stationIdx;
+            TrainInfo trainA;
+            if (!getTrainInfo(trainIdA, trainA)) continue;
 
-        int baseA = startDayA * 1440 + trainA.startTimeMin;
+            int startDayA = inferStartDay(userDepartDay, trainA.departMins[fromIdxA], trainA.startTimeMin);
+            if (startDayA < trainA.saleStart || startDayA > trainA.saleEnd) continue;
 
-        for (int midIdx = fromIdxA + 1; midIdx < trainA.stationNum; ++midIdx) {
-            const char* midStation = trainA.stations[midIdx];
-            if (strcmp(midStation, toStation) == 0) continue;
+            SeatInfo seatA;
+            if (!getSeatInfo(trainIdA, startDayA, seatA)) continue;
 
-            int arriveAtMid = baseA + trainA.arriveMins[midIdx];
+            int baseA = startDayA * 1440 + trainA.startTimeMin;
+            int leaveAFromStart = baseA + trainA.departMins[fromIdxA];
 
-            // 直接枚举所有从midStation出发的车次B
-            sjtu::vector<StationKey> bKeys;
-            sjtu::vector<StationInfo> bInfos;
-            queryByStation(midStation, bKeys, bInfos);
+            for (int midIdx = fromIdxA + 1; midIdx < trainA.stationNum; ++midIdx) {
+                const char* midStation = trainA.stations[midIdx];
+                if (strcmp(midStation, toStation) == 0) continue;
 
-            for (int bi = 0; bi < bKeys.size(); ++bi) {
-                const char* trainIdB = bKeys[bi].trainID;
-                if (strcmp(trainIdB, trainIdA) == 0) continue;
-                int midIdxB = bInfos[bi].stationIdx;
+                int arriveAtMid = baseA + trainA.arriveMins[midIdx];
 
-                TrainInfo trainB;
-                if (!getTrainInfo(trainIdB, trainB)) continue;
+                // 剪枝：A 段到达中转站时间已经超过当前 best 的总到达时间，不可能更优
+                if (found && byTime && arriveAtMid >= leaveAFromStart + bestTotalTime) continue;
 
-                // 找 trainB 中的 toStation 下标
-                int toIdxB = -1;
-                for (int k = midIdxB + 1; k < trainB.stationNum; ++k) {
-                    if (strcmp(trainB.stations[k], toStation) == 0) { toIdxB = k; break; }
-                }
-                if (toIdxB < 0) continue;
+                sjtu::vector<StationKey> bKeys;
+                sjtu::vector<StationInfo> bInfos;
+                queryByStation(midStation, bKeys, bInfos);
 
-                // 计算 B 在哪个始发日期能在 arriveAtMid 之后从 midStation 出发
-                int needAbsMin = arriveAtMid - trainB.startTimeMin - trainB.departMins[midIdxB];
-                int startDayB = needAbsMin / 1440;
-                if (needAbsMin % 1440 != 0 || startDayB * 1440 < needAbsMin) {
+                for (int bi = 0; bi < bKeys.size(); ++bi) {
+                    const char* trainIdB = bKeys[bi].trainID;
+                    if (strcmp(trainIdB, trainIdA) == 0) continue;
+                    int midIdxB = bInfos[bi].stationIdx;
+
+                    int toIdxB = -1;
+                    for (int k = 0; k < tKeys.size(); ++k) {
+                        if (strcmp(tKeys[k].trainID, trainIdB) == 0) {
+                            toIdxB = tInfos[k].stationIdx;
+                            break;
+                        }
+                    }
+                    if (toIdxB <= midIdxB) continue;
+
+                    TrainInfo trainB;
+                    if (!getTrainInfo(trainIdB, trainB)) continue;
+
+                    // 计算 B 在哪个始发日期能在 arriveAtMid 之后从 midStation 出发
+                    int needAbsMin = arriveAtMid - trainB.startTimeMin - trainB.departMins[midIdxB];
+                    int startDayB = needAbsMin / 1440;
                     if (startDayB * 1440 + trainB.startTimeMin + trainB.departMins[midIdxB] < arriveAtMid) ++startDayB;
-                }
-                if (startDayB < trainB.saleStart) startDayB = trainB.saleStart;
-                if (startDayB > trainB.saleEnd) continue;
+                    if (startDayB < trainB.saleStart) startDayB = trainB.saleStart;
+                    if (startDayB > trainB.saleEnd) continue;
 
-                SeatInfo seatB;
-                if (!getSeatInfo(trainIdB, startDayB, seatB)) continue;
-                int minSeatsB = seatB.seats[midIdxB];
-                for (int k = midIdxB + 1; k < toIdxB; ++k) if (seatB.seats[k] < minSeatsB) minSeatsB = seatB.seats[k];
+                    int baseB = startDayB * 1440 + trainB.startTimeMin;
+                    int leaveBFromMid = baseB + trainB.departMins[midIdxB];
+                    int arriveBToEnd = baseB + trainB.arriveMins[toIdxB];
 
-                int baseB = startDayB * 1440 + trainB.startTimeMin;
+                    if (leaveBFromMid < arriveAtMid) continue;
 
-                TicketResult rb;
-                strncpy(rb.trainID, trainIdB, 20); rb.trainID[20] = '\0';
-                strncpy(rb.fromStation, midStation, 30); rb.fromStation[30] = '\0';
-                strncpy(rb.toStation, toStation, 30); rb.toStation[30] = '\0';
-                rb.leaveAbsTime = baseB + trainB.departMins[midIdxB];
-                rb.arriveAbsTime = baseB + trainB.arriveMins[toIdxB];
-                rb.price = trainB.prefixPrice[toIdxB] - trainB.prefixPrice[midIdxB];
-                rb.availSeats = minSeatsB;
+                    int totalTime = arriveBToEnd - leaveAFromStart;
+                    int priceA = trainA.prefixPrice[midIdx] - trainA.prefixPrice[fromIdxA];
+                    int priceB = trainB.prefixPrice[toIdxB] - trainB.prefixPrice[midIdxB];
+                    int totalPrice = priceA + priceB;
 
-                if (rb.leaveAbsTime < arriveAtMid) continue;
+                    // 剪枝：当前方案明显比 best 差
+                    if (found) {
+                        if (byTime) {
+                            if (totalTime > bestTotalTime) continue;
+                            if (totalTime == bestTotalTime && totalPrice > bestTotalPrice) continue;
+                        } else {
+                            if (totalPrice > bestTotalPrice) continue;
+                            if (totalPrice == bestTotalPrice && totalTime > bestTotalTime) continue;
+                        }
+                    }
 
-                int minSeatsA = seatA.seats[fromIdxA];
-                for (int k = fromIdxA + 1; k < midIdx; ++k) if (seatA.seats[k] < minSeatsA) minSeatsA = seatA.seats[k];
+                    SeatInfo seatB;
+                    if (!getSeatInfo(trainIdB, startDayB, seatB)) continue;
+                    int minSeatsB = seatB.seats[midIdxB];
+                    for (int k = midIdxB + 1; k < toIdxB; ++k) if (seatB.seats[k] < minSeatsB) minSeatsB = seatB.seats[k];
 
-                TicketResult ra;
-                strncpy(ra.trainID, trainA.trainID, 20); ra.trainID[20] = '\0';
-                strncpy(ra.fromStation, trainA.stations[fromIdxA], 30); ra.fromStation[30] = '\0';
-                strncpy(ra.toStation, midStation, 30); ra.toStation[30] = '\0';
-                ra.leaveAbsTime = baseA + trainA.departMins[fromIdxA];
-                ra.arriveAbsTime = baseA + trainA.arriveMins[midIdx];
-                ra.price = trainA.prefixPrice[midIdx] - trainA.prefixPrice[fromIdxA];
-                ra.availSeats = minSeatsA;
+                    int minSeatsA = seatA.seats[fromIdxA];
+                    for (int k = fromIdxA + 1; k < midIdx; ++k) if (seatA.seats[k] < minSeatsA) minSeatsA = seatA.seats[k];
 
-                bool better = (!found || isBetterTransfer(ra, rb, bestA, bestB, byTime));
-                if (better) {
-                    found = true;
-                    bestA = ra;
-                    bestB = rb;
-                }
+                    TicketResult ra;
+                    strncpy(ra.trainID, trainA.trainID, 20); ra.trainID[20] = '\0';
+                    strncpy(ra.fromStation, trainA.stations[fromIdxA], 30); ra.fromStation[30] = '\0';
+                    strncpy(ra.toStation, midStation, 30); ra.toStation[30] = '\0';
+                    ra.leaveAbsTime = leaveAFromStart;
+                    ra.arriveAbsTime = arriveAtMid;
+                    ra.price = priceA;
+                    ra.availSeats = minSeatsA;
+
+                    TicketResult rb;
+                    strncpy(rb.trainID, trainIdB, 20); rb.trainID[20] = '\0';
+                    strncpy(rb.fromStation, midStation, 30); rb.fromStation[30] = '\0';
+                    strncpy(rb.toStation, toStation, 30); rb.toStation[30] = '\0';
+                    rb.leaveAbsTime = leaveBFromMid;
+                    rb.arriveAbsTime = arriveBToEnd;
+                    rb.price = priceB;
+                    rb.availSeats = minSeatsB;
+
+                    bool better = (!found || isBetterTransfer(ra, rb, bestA, bestB, byTime));
+                    if (better) {
+                        found = true;
+                        bestA = ra;
+                        bestB = rb;
+                        bestTotalTime = totalTime;
+                        bestTotalPrice = totalPrice;
+                    }
             }
         }
     }
