@@ -9,7 +9,7 @@
 #include <cstdio>
 #include "vector/vector.h"
 
-template <class Key, class Value, int M = 50>
+template <class Key, class Value, int M = 30>
 class BPlusTree {
 private:
     static const int MIN = (M - 1) / 2;
