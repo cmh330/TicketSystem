@@ -126,9 +126,10 @@ int main() {
 
         if (strcmp(command, "clean") == 0) {
             um.resetMemory();
-            for (const char *name : {"user", "user.idx", "train", "train.idx",
-                                     "station", "station.idx", "seat", "seat.idx",
-                                     "order", "order.idx", "pending", "pending.idx", "user_count"}) {
+            for (const char *name : {"user", "user.idx", "train", "train.idx", "train.data",
+                                     "station", "station.idx", "seat", "seat.idx", "seat.data",
+                                     "order", "order.idx", "order.data",
+                                     "pending", "pending.idx", "pending.data", "user_count"}) {
                 remove(name);
             }
             std::cout << "0\n";
