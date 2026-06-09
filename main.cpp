@@ -105,6 +105,10 @@ int main() {
     //     remove(name);
     // }
 
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+    std::cout.tie(nullptr);
+
     UserManager um;
     OrderManager om;
     TrainManager tm;
