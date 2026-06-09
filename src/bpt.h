@@ -9,7 +9,7 @@
 #include <cstdio>
 #include "vector/vector.h"
 
-template <class Key, class Value, int M = 20>
+template <class Key, class Value, int M = 30>
 class BPlusTree {
 private:
     static const int MIN = (M - 1) / 2;
@@ -75,13 +75,22 @@ private:
     };
 
     std::fstream f;
-    InternalNode *pool = nullptr;
+    // InternalNode *pool = nullptr;
+    sjtu::vector<InternalNode*> pool;
     int internalNodeCount = 0;
     int root = makeLeafChild(0);
     Header header;
     std::string indexFileName; // 记录内部节点pool的数据
     Path path[100]; // 记录单次操作走的路径
     int pathDepth = 0; // 经过n个内部节点才到叶结点，一共有n+1层
+
+    // 访问 pool[id]，必要时分配
+    InternalNode& getNode(int id) {
+        while (pool.size() <= id) {
+            pool.push_back(new InternalNode());
+        }
+        return *pool[id];
+    }
 
     // 叶子IO
     void readLeaf(int blockId, Leaf &leaf) {
@@ -148,7 +157,7 @@ private:
     int locateFirstLeaf(const Key &k) {
         int cur = root;
         while (!isLeaf(cur)) {
-            InternalNode &node = pool[cur];
+            InternalNode &node = getNode(cur);
             int pos = 0;
             while (pos < node.cnt && node.sepKeys[pos] < k) pos++;
             cur = node.child[pos];
@@ -160,7 +169,7 @@ private:
         pathDepth = 0;
         int cur = root;
         while (!isLeaf(cur)) {
-            InternalNode &node = pool[cur];
+            InternalNode &node = getNode(cur);
             int pos = 0;
             // 找第一个pos，(key, value) < sep[pos]
             while (pos < node.cnt && !compareLess(k, v, node.sepKeys[pos], node.sepValues[pos])) pos++;
@@ -177,7 +186,9 @@ private:
         if (!file.is_open()) return;
         file.write(reinterpret_cast<const char *>(&internalNodeCount), sizeof(internalNodeCount));
         file.write(reinterpret_cast<const char *>(&root), sizeof(root));
-        file.write(reinterpret_cast<const char *>(pool), sizeof(InternalNode) * internalNodeCount);
+        for (int i = 0; i < internalNodeCount; ++i) {
+            file.write(reinterpret_cast<const char *>(pool[i]), sizeof(InternalNode));
+        }
     }
     // 程序新开始时读取.idx中的pool信息
     void loadIndex() {
@@ -194,8 +205,9 @@ private:
         }
         file.read(reinterpret_cast<char *>(&internalNodeCount), sizeof(internalNodeCount));
         file.read(reinterpret_cast<char *>(&root), sizeof(root));
-        if (internalNodeCount > 0) {
-            file.read(reinterpret_cast<char *>(pool), sizeof(InternalNode) * internalNodeCount);
+        for (int i = 0; i < internalNodeCount; ++i) {
+            pool.push_back(new InternalNode());
+            file.read(reinterpret_cast<char *>(pool[i]), sizeof(InternalNode));
         }
         readHeader();
     }
@@ -206,16 +218,17 @@ private:
         if (pathDepth == 0) {
             // 原来的根是叶子节点，新建根
             int newRoot = internalNodeCount++;
-            pool[newRoot].cnt = 1;
-            pool[newRoot].sepKeys[0] = sepKey;
-            pool[newRoot].sepValues[0] = sepValue;
-            pool[newRoot].child[0] = root;
-            pool[newRoot].child[1] = rightChild;
+            InternalNode &nr = getNode(newRoot);
+            nr.cnt = 1;
+            nr.sepKeys[0] = sepKey;
+            nr.sepValues[0] = sepValue;
+            nr.child[0] = root;
+            nr.child[1] = rightChild;
             root = newRoot;
             return;
         }
         Path &p = path[--pathDepth];
-        InternalNode &node = pool[p.nodeId]; // 父节点
+        InternalNode &node = getNode(p.nodeId); // 父节点
         int childPos = p.childPos;
         // 后面的都后移
         for (int i = node.cnt; i > childPos; --i) {
@@ -236,25 +249,26 @@ private:
 
     // 内部节点（pool[nodeIndex]）溢出分裂（共m个分隔符）
     void splitNode(int nodeIndex) {
-        InternalNode &left = pool[nodeIndex];
+        InternalNode &left = getNode(nodeIndex);
         int mid = (M - 1) / 2; // 中间的要上推，不保留在左右任何一边
         Key upKey = left.sepKeys[mid];
         Value upValue = left.sepValues[mid];
 
         int rightId = internalNodeCount++;
-        InternalNode &right = pool[rightId];
-        right.cnt = left.cnt - mid - 1;
+        InternalNode &right = getNode(rightId);
+        InternalNode &newLeft = *pool[nodeIndex];
+        right.cnt = newLeft.cnt - mid - 1;
         // copy to right
         for (int i = 0; i < right.cnt; ++i) {
-            right.sepKeys[i] = left.sepKeys[i + mid + 1];
-            right.sepValues[i] = left.sepValues[i + mid + 1];
+            right.sepKeys[i] = newLeft.sepKeys[i + mid + 1];
+            right.sepValues[i] = newLeft.sepValues[i + mid + 1];
         }
         // child[mid]在left中
         for (int i = 0; i <= right.cnt; ++i) {
-            right.child[i] = left.child[i + mid + 1];
+            right.child[i] = newLeft.child[i + mid + 1];
         }
 
-        left.cnt = mid;
+        newLeft.cnt = mid;
         pushUp(upKey, upValue, rightId);
     }
 
@@ -293,7 +307,7 @@ private:
     // erase辅助函数
     // 在内部节点nodeId中删除分隔符(sep[i])和其右孩子(child[i + 1]). parentPos: nodeId父节点在path[]中的下标
     void removeSeparate(int nodeId, int sepPos, int parPos) {
-        InternalNode &node = pool[nodeId];
+        InternalNode &node = getNode(nodeId);
         for (int i = sepPos; i < node.cnt - 1; ++i) {
             node.sepKeys[i] = node.sepKeys[i + 1];
             node.sepValues[i] = node.sepValues[i + 1];
@@ -316,14 +330,14 @@ private:
     }
 
     void fixNode(int nodeId, int parPos) {
-        InternalNode &node = pool[nodeId];
+        InternalNode &node = getNode(nodeId);
         Path &p = path[parPos];
-        InternalNode &parent = pool[p.nodeId];
+        InternalNode &parent = getNode(p.nodeId);
         int childId = p.childPos; // 表示path走的是child[childId]
 
         // try to borrow from right
         if (childId < parent.cnt) {
-            InternalNode &right = pool[parent.child[childId + 1]];
+            InternalNode &right = getNode(parent.child[childId + 1]);
             if (right.cnt > MIN) {
                 // 借成功了
                 node.sepKeys[node.cnt] = parent.sepKeys[childId];
@@ -345,7 +359,7 @@ private:
         }
         // try to borrow from left
         if (childId > 0) {
-            InternalNode &left = pool[parent.child[childId - 1]];
+            InternalNode &left = getNode(parent.child[childId - 1]);
             if (left.cnt > MIN) {
                 // 借成功了
                 for (int i = node.cnt - 1; i >= 0; --i) {
@@ -368,7 +382,7 @@ private:
 
         // merge with right
         if (childId < parent.cnt) {
-            InternalNode &right = pool[parent.child[childId + 1]];
+            InternalNode &right = getNode(parent.child[childId + 1]);
             node.sepKeys[node.cnt] = parent.sepKeys[childId];
             node.sepValues[node.cnt] = parent.sepValues[childId];
             for (int i = 0; i < right.cnt; ++i) {
@@ -383,7 +397,7 @@ private:
         }
         // merge with left
         else {
-            InternalNode &left = pool[parent.child[childId - 1]];
+            InternalNode &left = getNode(parent.child[childId - 1]);
             left.sepKeys[left.cnt] = parent.sepKeys[childId - 1];
             left.sepValues[left.cnt] = parent.sepValues[childId - 1];
             for (int i = 0; i < node.cnt; ++i) {
@@ -401,7 +415,7 @@ private:
     void fixLeaf(int blockId, Leaf &leaf) {
         if (pathDepth == 0) return;
         Path &p = path[pathDepth - 1];
-        InternalNode &parent = pool[p.nodeId];
+        InternalNode &parent = getNode(p.nodeId);
         int childId = p.childPos;
 
         // try to borrow from right
@@ -500,7 +514,7 @@ private:
 public:
     BPlusTree(const std::string &dataFileName) : indexFileName(dataFileName + ".idx") {
         // dataFileName是存叶子结点的，indexFileName是pool
-        pool = new InternalNode[MAX_INTERNAL_NODES]();
+        // pool = new InternalNode[MAX_INTERNAL_NODES]();
         f.open(dataFileName, std::ios::binary | std::ios::in | std::ios::out);
         if (!f.is_open()) {
             f.open(dataFileName, std::ios::binary | std::ios::out);
@@ -512,7 +526,10 @@ public:
 
     ~BPlusTree() {
         saveIndex();
-        delete[] pool;
+        // delete[] pool;
+        for (int i = 0; i < pool.size(); ++i) {
+            delete pool[i];
+        }
         f.close();
     }
 
