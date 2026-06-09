@@ -179,6 +179,8 @@ public:
         TrainInfo train;
         tm.getTrainInfo(trainID, train);
 
+        if (num > train.seatNum) return -1;
+
         OrderInfo order;
         strncpy(order.username, username, 20);
         order.username[20] = '\0';
